@@ -175,11 +175,21 @@ _
             const [supabaseClient, setSupabaseClient] = useState(null);
             const [statusMessage, setStatusMessage] = useState({ type: '', text: '' });
 
+            // Gemini API Config State
+            const [geminiApiKey, setGeminiApiKey] = useState('');
+            const [isGenerating, setIsGenerating] = useState(false);
+
             // Load Initial Data
             useEffect(() => {
                 // Initialize default input if empty
                 setInputText("오늘 마음속이 시끄럽고 유독 남들의 시선에 불안해하고 민감하게 반응했다. 상대방이 툭 던진 말 한마디가 계속해서 머릿속을 맴돌았고, 겉으로는 괜찮은 척했지만 가슴이 답답하고 불안했다. 저녁이 되어 생각해보니 내가 왜 그렇게 남의 시선에 흔들렸는지 나 자신을 먼저 보살펴야겠다는 생각이 든다.");
                 setTopic("타인의 시선에서 벗어나 내면의 평온 찾기");
+
+                // Load Gemini Key if saved
+                const savedGeminiKey = localStorage.getItem('gemini_key') || '';
+                if (savedGeminiKey) {
+                    setGeminiApiKey(savedGeminiKey);
+                }
 
                 // Try to load Env values from window/localStorage or input
                 const savedUrl = localStorage.getItem('sb_url') || '';
@@ -257,14 +267,58 @@ _
                 showStatus('success', '추천 샘플 데이터가 로드되었습니다.');
             };
 
-            const handleGenerate = () => {
+            const handleGenerate = async () => {
                 if (!inputText.trim() || !topic.trim()) {
                     showStatus('error', '원본 글과 명상 주제를 입력해 주세요.');
                     return;
                 }
-                const generated = generateContents(inputText, topic);
-                setResults(generated);
-                showStatus('success', '콘텐츠가 정상적으로 생성되었습니다!');
+                setIsGenerating(true);
+                showStatus('info', '콘텐츠를 정돈하고 생성하는 중입니다...');
+
+                if (geminiApiKey.trim()) {
+                    try {
+                        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey.trim()}`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                contents: [{
+                                    parts: [{
+                                        text: `사용자 원본 글: "${inputText}"\n주제: "${topic}"\n\n위 원본 글을 바탕으로 소셜 콘텐츠(블로그 포스팅, 마음 명상 가이드, 인스타 캡션, 유튜브 쇼츠 대본)를 가공하여 생성해 주세요. 다음 지침을 엄격히 지켜주세요:\n1. 원본 글의 핵심 메시지와 내용은 훼손하지 않고 최대한 보존해 주세요.\n2. 원본에서 불필요하게 중복되거나 쓸데없이 여러 번 반복되는 표현은 과감히 삭제해 주세요.\n3. 원본의 맞춤법, 띄어쓰기 오류가 있다면 올바르고 정갈하게 수정해 주세요.\n4. 감상적이거나 과도한 미사여구, 화려한 수식어는 일절 배제하고, 독자가 읽기 편하게 담백하고 깔끔하며 가독성 좋게 작성해 주세요.\n\n출력은 반드시 다른 부연 설명 없이 아래 JSON 스키마 규격을 완벽히 따르는 순수 JSON 텍스트로만 반환해 주세요. \`\`\`json 기호 등 마크다운 태그도 일절 넣지 마세요:\n{\n  "blog": "블로그 포스팅 본문 (줄바꿈 포함)",\n  "meditation": "마음 명상 가이드 본문 (줄바꿈 포함)",\n  "instagram": "인스타 캡션 본문 (줄바꿈 포함)",\n  "youtube": "유튜브 대본 본문 (줄바꿈 포함)"\n}`
+                                    }]
+                                }]
+                            })
+                        });
+
+                        if (!response.ok) throw new Error('Gemini API 호출에 실패했습니다.');
+                        const data = await response.json();
+                        let resultText = data.candidates[0].content.parts[0].text;
+                        
+                        // Clean json markdown wrapper if any
+                        resultText = resultText.replace(/^\s*```json/i, '').replace(/```\s*$/, '').trim();
+                        
+                        const parsed = JSON.parse(resultText);
+                        setResults(parsed);
+                        showStatus('success', 'Gemini AI로 정돈 및 맞춤법 교정이 완료된 콘텐츠가 생성되었습니다!');
+                        localStorage.setItem('gemini_key', geminiApiKey.trim());
+                    } catch (err) {
+                        console.error('Gemini error:', err);
+                        showStatus('error', 'AI 생성 실패. 로컬 기본 담백한 템플릿으로 대체하여 생성합니다.');
+                        const generated = generateContents(inputText, topic);
+                        setResults(generated);
+                    } finally {
+                        setIsGenerating(false);
+                    }
+                } else {
+                    // Fallback to local clean generator
+                    setTimeout(() => {
+                        const generated = generateContents(inputText, topic);
+                        setResults(generated);
+                        showStatus('success', '로컬 템플릿 기반 콘텐츠가 생성되었습니다! (실시간 맞춤법/중복 제거는 API Key 등록 시 작동)');
+                        setIsGenerating(false);
+                    }, 500);
+                }
             };
 
             const handleSave = async () => {
@@ -438,11 +492,35 @@ ${results.youtube}
                                         </button>
                                         <button 
                                             onClick={handleGenerate}
-                                            className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl text-sm shadow-sm transition"
+                                            disabled={isGenerating}
+                                            className={`flex-1 py-3 px-4 text-white font-medium rounded-xl text-sm shadow-sm transition ${
+                                                isGenerating ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
+                                            }`}
                                         >
-                                            ✨ AI 서식 변환
+                                            {isGenerating ? '⏳ 정돈 및 변환 중...' : '✨ AI 서식 변환'}
                                         </button>
                                     </div>
+                                </div>
+                            </div>
+
+                            {/* Gemini API settings */}
+                            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                                <h2 className="text-lg font-semibold text-slate-900 mb-2">🔑 실시간 AI 맞춤 교정 (옵션)</h2>
+                                <p className="text-sm text-slate-500 mb-4">Gemini API Key를 입력하시면 AI가 실제 맞춤법 교정, 중복 표현 제거, 문장 다듬기를 완벽히 수행합니다.</p>
+                                <div className="space-y-3">
+                                    <input 
+                                        type="password" 
+                                        placeholder="Google Gemini API Key 입력" 
+                                        value={geminiApiKey}
+                                        onChange={(e) => {
+                                            setGeminiApiKey(e.target.value);
+                                            localStorage.setItem('gemini_key', e.target.value);
+                                        }}
+                                        className="w-full text-xs rounded-lg border-slate-200 p-2 border focus:ring-1 focus:ring-blue-500"
+                                    />
+                                    <p className="text-[10px] text-slate-400">
+                                        * API Key는 <a href="https://aistudio.google.com" target="_blank" rel="noopener noreferrer" className="text-blue-500 underline">Google AI Studio (무료)</a>에서 발급받으실 수 있습니다. 입력된 Key는 브라우저 내부 로컬 스토리지에만 안전하게 자동 저장됩니다.
+                                    </p>
                                 </div>
                             </div>
 
